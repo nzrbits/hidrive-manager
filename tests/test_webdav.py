@@ -173,3 +173,26 @@ def test_error_on_gz_path_still_reports_status(dav):
     client, _ = dav
     with pytest.raises(NotFound):
         client.delete("/users/home-1/missing.tar.gz")
+
+
+def test_gz_propfind_reads_raw_body(dav):
+    client, session = dav
+    session.add_file("/users/home-1/p.tar.gz", b"p" * 77)
+    e = client.stat("/users/home-1/p.tar.gz")
+    assert e is not None and e.size == 77
+
+
+def test_propfind_gunzips_a_really_compressed_body(dav, monkeypatch):
+    import gzip as _gzip
+
+    client, session = dav
+    orig = session._propfind
+
+    def compressed(path, headers, kw):
+        r = orig(path, headers, kw)
+        body = _gzip.compress(r._body)
+        r._body, r.raw = body, __import__("fakedav")._Raw(body)
+        return r
+
+    monkeypatch.setattr(session, "_propfind", compressed)
+    assert client.stat("/users/home-1/readme.txt").size == 5

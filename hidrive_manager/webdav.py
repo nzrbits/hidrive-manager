@@ -1,6 +1,7 @@
 """Minimal, dependency-light WebDAV client tuned for HiDrive (Apache mod_dav)."""
 from __future__ import annotations
 
+import gzip
 import os
 import time
 from collections.abc import Callable, Iterator
@@ -128,11 +129,18 @@ class WebDavClient:
             path,
             headers={"Depth": str(depth), "Content-Type": "application/xml; charset=utf-8"},
             data=PROPFIND_BODY.encode(),
+            stream=True,
         )
-        _raise_for(resp, path)
-        if resp.status_code != 207:
-            raise WebDavError(resp.status_code, "unexpected PROPFIND response", path)
-        return parse_multistatus(resp.content, self.base_url)
+        try:
+            _raise_for(resp, path)
+            if resp.status_code != 207:
+                raise WebDavError(resp.status_code, "unexpected PROPFIND response", path)
+            body = b"".join(_raw_chunks(resp, CHUNK))
+        finally:
+            resp.close()
+        if body[:2] == b"\x1f\x8b":  # genuinely compressed by the server
+            body = gzip.decompress(body)
+        return parse_multistatus(body, self.base_url)
 
     def stat(self, path: str) -> Entry | None:
         try:

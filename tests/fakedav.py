@@ -135,8 +135,8 @@ class FakeDavSession:
         if h is None:
             return FakeResponse(405)
         resp = h(path, headers, kw)
-        if path.endswith((".gz", ".tgz")) and method != "PROPFIND":
-            resp._bogus = True  # Apache AddEncoding on .gz names
+        if path.endswith((".gz", ".tgz")):
+            resp._bogus = True  # Apache AddEncoding on .gz names, also on PROPFIND replies
             if method == "PUT":
                 resp._body = b"<html>Resource created</html>"
                 resp.raw = _Raw(resp._body)
