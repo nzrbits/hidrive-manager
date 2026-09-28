@@ -56,9 +56,21 @@ def _raise_for(resp: requests.Response, path: str) -> None:
         raise NotFound(s, "not found", path)
     if s in (401, 403):
         raise AuthError(s, "authentication failed" if s == 401 else "forbidden", path)
-    text = (resp.text or "").strip().splitlines()
+    try:
+        text = (resp.text or "").strip().splitlines()
+    except requests.RequestException:  # e.g. bogus Content-Encoding on a .gz path
+        text = []
     detail = text[0][:120] if text else resp.reason
     raise WebDavError(s, detail or "request failed", path)
+
+
+def _raw_chunks(resp: requests.Response, size: int) -> Iterator[bytes]:
+    """Iterate the response body as stored on the server.
+
+    Apache tags resources named *.gz / *.tgz with `Content-Encoding: gzip` even though the
+    bytes are the file itself, so decoding must be off or requests would gunzip the archive.
+    """
+    yield from resp.raw.stream(size, decode_content=False)
 
 
 class WebDavClient:
@@ -87,6 +99,7 @@ class WebDavClient:
             session.mount("http://", HTTPAdapter(max_retries=retry, pool_maxsize=16))
         session.auth = (username, password)
         session.headers.setdefault("User-Agent", "hidrive-manager")
+        session.headers.setdefault("Accept-Encoding", "identity")
         self.session = session
 
     # --- low level ---------------------------------------------------------------
@@ -97,6 +110,15 @@ class WebDavClient:
     def _request(self, method: str, path: str, **kw) -> requests.Response:
         kw.setdefault("timeout", self.timeout)
         return self.session.request(method, self.url(path), **kw)
+
+    def _modify(self, method: str, path: str, **kw) -> requests.Response:
+        """Request whose response body is irrelevant; never decoded, always closed."""
+        resp = self._request(method, path, stream=True, **kw)
+        try:
+            _raise_for(resp, path)
+        finally:
+            resp.close()
+        return resp
 
     # --- metadata ----------------------------------------------------------------
 
@@ -146,10 +168,13 @@ class WebDavClient:
 
     def mkdir(self, path: str) -> bool:
         """Create one directory. Returns False when it already existed."""
-        resp = self._request("MKCOL", path)
-        if resp.status_code == 405:  # method not allowed: collection already exists
-            return False
-        _raise_for(resp, path)
+        resp = self._request("MKCOL", path, stream=True)
+        try:
+            if resp.status_code == 405:  # method not allowed: collection already exists
+                return False
+            _raise_for(resp, path)
+        finally:
+            resp.close()
         return True
 
     def makedirs(self, path: str) -> None:
@@ -179,8 +204,7 @@ class WebDavClient:
             try:
                 with open(local, "rb") as fh:
                     body = _ProgressReader(fh, size, cb) if size else b""
-                    resp = self._request("PUT", remote, data=body, headers={"Content-Length": str(size)})
-                _raise_for(resp, remote)
+                    self._modify("PUT", remote, data=body, headers={"Content-Length": str(size)})
                 return
             except (requests.ConnectionError, requests.Timeout, WebDavError) as exc:
                 retryable = not isinstance(exc, WebDavError) or exc.status >= 500
@@ -208,7 +232,7 @@ class WebDavClient:
                 progress(offset)
             mode = "ab" if offset else "wb"
             with open(part, mode) as fh:
-                for chunk in resp.iter_content(CHUNK):
+                for chunk in _raw_chunks(resp, CHUNK):
                     if chunk:
                         fh.write(chunk)
                         if progress:
@@ -217,25 +241,31 @@ class WebDavClient:
             resp.close()
         os.replace(part, local)
 
-    def open_stream(self, remote: str) -> requests.Response:
+    def stream(self, remote: str, chunk: int = CHUNK) -> Iterator[bytes]:
+        """Yield the raw bytes of a remote file."""
         resp = self._request("GET", remote, stream=True)
-        _raise_for(resp, remote)
-        return resp
+        try:
+            _raise_for(resp, remote)
+            yield from _raw_chunks(resp, chunk)
+        finally:
+            resp.close()
 
     # --- modify ------------------------------------------------------------------
 
     def delete(self, path: str) -> None:
-        resp = self._request("DELETE", path)
-        _raise_for(resp, path)
+        self._modify("DELETE", path)
+
+    def _move_or_copy(self, method: str, src: str, dst: str, overwrite: bool) -> None:
+        resp = self._request(method, src, stream=True, headers={"Destination": self.url(dst), "Overwrite": "T" if overwrite else "F"})
+        try:
+            if resp.status_code == 412:
+                raise WebDavError(412, "destination exists (use --force to overwrite)", dst)
+            _raise_for(resp, src)
+        finally:
+            resp.close()
 
     def move(self, src: str, dst: str, overwrite: bool = False) -> None:
-        resp = self._request("MOVE", src, headers={"Destination": self.url(dst), "Overwrite": "T" if overwrite else "F"})
-        if resp.status_code == 412:
-            raise WebDavError(412, "destination exists (use --force to overwrite)", dst)
-        _raise_for(resp, src)
+        self._move_or_copy("MOVE", src, dst, overwrite)
 
     def copy(self, src: str, dst: str, overwrite: bool = False) -> None:
-        resp = self._request("COPY", src, headers={"Destination": self.url(dst), "Overwrite": "T" if overwrite else "F"})
-        if resp.status_code == 412:
-            raise WebDavError(412, "destination exists (use --force to overwrite)", dst)
-        _raise_for(resp, src)
+        self._move_or_copy("COPY", src, dst, overwrite)

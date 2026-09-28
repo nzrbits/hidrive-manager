@@ -11,21 +11,47 @@ import requests
 BASE = "https://fake.hidrive.test"
 
 
+class _Raw:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def stream(self, n: int, decode_content: bool = True):
+        if decode_content:
+            raise AssertionError("client must read raw bytes with decode_content=False")
+        for i in range(0, len(self._body), n):
+            yield self._body[i : i + n]
+
+
 class FakeResponse:
-    def __init__(self, status: int, body: bytes = b"", headers: dict | None = None, reason: str = ""):
+    """Like HiDrive's Apache: for *.gz paths the body carries Content-Encoding: gzip although
+    the bytes are the stored file, so every decoded access raises like requests would."""
+
+    def __init__(self, status: int, body: bytes = b"", headers: dict | None = None, reason: str = "", bogus_encoding: bool = False):
         self.status_code = status
-        self.content = body
+        self._body = body
         self.headers = headers or {}
         self.reason = reason
         self.closed = False
+        self.raw = _Raw(body)
+        self._bogus = bogus_encoding
+
+    def _decoded(self) -> bytes:
+        if self._bogus:
+            raise requests.exceptions.ContentDecodingError("Received response with content-encoding: gzip, but failed to decode it.")
+        return self._body
+
+    @property
+    def content(self) -> bytes:
+        return self._decoded()
 
     @property
     def text(self) -> str:
-        return self.content.decode("utf-8", "replace")
+        return self._decoded().decode("utf-8", "replace")
 
     def iter_content(self, n: int):
-        for i in range(0, len(self.content), n):
-            yield self.content[i : i + n]
+        body = self._decoded()
+        for i in range(0, len(body), n):
+            yield body[i : i + n]
 
     def close(self) -> None:
         self.closed = True
@@ -108,7 +134,13 @@ class FakeDavSession:
         h = getattr(self, "_" + method.lower(), None)
         if h is None:
             return FakeResponse(405)
-        return h(path, headers, kw)
+        resp = h(path, headers, kw)
+        if path.endswith((".gz", ".tgz")) and method != "PROPFIND":
+            resp._bogus = True  # Apache AddEncoding on .gz names
+            if method == "PUT":
+                resp._body = b"<html>Resource created</html>"
+                resp.raw = _Raw(resp._body)
+        return resp
 
     def _propfind(self, path, headers, kw):
         if path not in self.files:

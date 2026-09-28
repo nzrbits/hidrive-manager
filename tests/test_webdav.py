@@ -139,3 +139,37 @@ def test_urls_are_encoded(dav):
     client.stat("/Musik Backup/ä b")
     assert ("PROPFIND", "/Musik Backup/ä b") in session.calls
     assert client.url("/Musik Backup/ä b") == "https://fake.hidrive.test/Musik%20Backup/%C3%A4%20b"
+
+
+def test_gz_upload_survives_bogus_content_encoding(dav, tmp_path):
+    client, session = dav
+    src = tmp_path / "x.tar.gz"
+    src.write_bytes(b"\x1f\x8b" + b"z" * 5000)
+    client.upload(src, "/users/home-1/x.tar.gz")
+    assert session.files["/users/home-1/x.tar.gz"] == src.read_bytes()
+    assert client.stat("/users/home-1/x.tar.gz").size == 5002
+
+
+def test_gz_download_and_stream_return_stored_bytes(dav, tmp_path):
+    client, session = dav
+    payload = b"\x1f\x8b" + b"q" * 3000
+    session.add_file("/users/home-1/a.tar.gz", payload)
+    target = tmp_path / "a.tar.gz"
+    client.download("/users/home-1/a.tar.gz", target, expected_size=len(payload))
+    assert target.read_bytes() == payload
+    assert b"".join(client.stream("/users/home-1/a.tar.gz", 1000)) == payload
+
+
+def test_gz_delete_move_copy_do_not_read_body(dav):
+    client, session = dav
+    session.add_file("/users/home-1/b.tgz", b"bb")
+    client.copy("/users/home-1/b.tgz", "/users/home-1/c.tgz")
+    client.move("/users/home-1/c.tgz", "/users/home-1/d.tgz")
+    client.delete("/users/home-1/d.tgz")
+    assert "/users/home-1/d.tgz" not in session.files and "/users/home-1/b.tgz" in session.files
+
+
+def test_error_on_gz_path_still_reports_status(dav):
+    client, _ = dav
+    with pytest.raises(NotFound):
+        client.delete("/users/home-1/missing.tar.gz")

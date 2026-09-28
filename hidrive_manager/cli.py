@@ -259,13 +259,9 @@ def cmd_sync(args) -> int:
 
 def cmd_cat(args) -> int:
     client = _client(args)
-    resp = client.open_stream(args.path)
     out = sys.stdout.buffer
-    try:
-        for chunk in resp.iter_content(1024 * 256):
-            out.write(chunk)
-    finally:
-        resp.close()
+    for chunk in client.stream(args.path, 1024 * 256):
+        out.write(chunk)
     out.flush()
     return EXIT_OK
 

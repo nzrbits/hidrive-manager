@@ -4,6 +4,13 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- `.gz` / `.tgz` files: HiDrive's Apache tags them with `Content-Encoding: gzip`, which made `put` report a failure after a complete upload and would have gunzipped archives on `get` and `cat`. Responses of PUT/DELETE/MKCOL/MOVE/COPY are no longer decoded, downloads read raw bytes.
+- stdout is line buffered so `-v` logs redirected to a file stay in order
+- `put`/`sync` create each missing directory with one MKCOL instead of an existence check per parent
+
 ## [0.1.0] - 2026-09-28
 
 ### Added
