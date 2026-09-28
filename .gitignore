@@ -1,0 +1,18 @@
+# Never commit credentials or local config
+config.json
+*.local.*
+.env
+
+# Python
+.venv*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
