@@ -10,7 +10,7 @@ from pathlib import Path
 from . import paths
 from .davxml import Entry
 from .progress import Progress
-from .webdav import WebDavClient
+from .webdav import WebDavClient, WebDavError
 
 MTIME_TOLERANCE = 2.0  # seconds; WebDAV timestamps have 1s resolution
 
@@ -258,10 +258,16 @@ def execute(client: WebDavClient, plan: Plan, jobs: int = 4, progress: Progress 
     res = Result()
     log = progress.write if progress else (lambda m: print(m))
 
-    # 1. directories (sequential, parents first)
-    for a in plan.of("mkdir"):
+    # 1. directories (sequential, parents first). The plan lists only missing dirs in depth
+    #    order, so one MKCOL each is enough; fall back to makedirs when a parent is missing.
+    for a in sorted(plan.of("mkdir"), key=lambda x: x.remote.count("/")):
         try:
-            client.makedirs(a.remote)
+            try:
+                client.mkdir(a.remote)
+            except WebDavError as exc:
+                if exc.status != 409:
+                    raise
+                client.makedirs(a.remote)
             res.ok += 1
             if verbose:
                 log(f"mkdir  {a.remote}")

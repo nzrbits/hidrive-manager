@@ -502,6 +502,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:  # keep stdout and stderr interleaved correctly when logging to a file
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
     try:
         return args.func(args)
     except CliError as exc:
